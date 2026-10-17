@@ -20,7 +20,7 @@
 > use the same `\COPY` pattern as in section 3.3.
 
 Even though, we can note that the attribute `customer_name` is composite, we will not
-need it any any form that would require it to be transferred to atomic attributes.
+need it any form that would require it to be transferred to atomic attributes.
 
 ~~~sql
 DROP TABLE IF EXISTS orders;
@@ -62,14 +62,14 @@ CREATE TABLE orders (
 <br>
 
 ~~~sql
-SELECT price_per_unit
+SELECT *
 FROM orders
 ORDER BY price_per_unit DESC
 LIMIT 1;
 ~~~
 
 Output:
-~~~bash
+~~~text
  price_per_unit 
 ----------------
         2000
@@ -86,17 +86,17 @@ Output:
 SELECT product_category, SUM(quantity) AS quantity_sold
 FROM orders
 GROUP BY product_category
-ORDER BY SUM(quantity)
+ORDER BY SUM(quantity) DESC
 LIMIT 3;
 ~~~
 
 Output:
-~~~bash
+~~~text
  product_category | quantity_sold 
 ------------------+---------------
- Sports           |        298573
- Automotive       |        299189
- Home & Garden    |        299668
+ Health & Beauty  |        300842
+ Electronics      |        300804
+ Toys             |        300598
 (3 rows)
 ~~~
 </details>
@@ -113,7 +113,7 @@ GROUP BY product_category;
 ~~~
 
 Output:
-~~~bash
+~~~text
  product_category |   revenue    
 ------------------+--------------
  Automotive       | 306589798.86
@@ -144,7 +144,7 @@ LIMIT 5;
 ~~~
 
 Output:
-~~~bash
+~~~text
  customer_name  |  revenue  
 ----------------+-----------
  Carol Taylor   | 991179.18
@@ -161,29 +161,24 @@ Output:
 <br>
 
 ~~~sql
---Look at how many orders these customers made
-SELECT customer_name,
-       ROUND(SUM(price_per_unit*quantity)::numeric, 2) AS revenue,
-       COUNT(id) AS ordered
-FROM orders
-GROUP BY customer_name
-ORDER BY SUM(price_per_unit*quantity) DESC
-LIMIT 5;
+--Look at how customers exist and how evenly do they order
+SELECT COUNT(*)                  AS distinct_names,
+       ROUND(AVG(orders), 1)     AS avg_orders,
+       MIN(orders)               AS min_orders,
+       MAX(orders)               AS max_orders
+FROM (SELECT customer_name, COUNT(*) AS orders
+      FROM orders GROUP BY customer_name) s;
 ~~~
 
 Output:
-~~~bash
- customer_name  |  revenue  | ordered 
-----------------+-----------+---------
- Carol Taylor   | 991179.18 |    1028
- Nina Lopez     | 975444.95 |     980
- Daniel Jackson | 959344.48 |    1033
- Carol Lewis    | 947708.57 |     943
- Daniel Young   | 946030.14 |     973
-(5 rows)
+~~~text
+ distinct_names | avg_orders | min_orders | max_orders 
+----------------+------------+------------+------------
+           1056 |      947.0 |        837 |       1043
+(1 row)
 ~~~
 
-**Explanation:** the python code defines the boundaries of the prices, meaning people will have to order approximately the same amount of products in order to create the same amound of revenue for the company.
+**Explanation:** the top-5 "customers" look almost identical: each has roughly 950–1030 orders and a total of about 0.95–0.99M. The reason is in `dataset_generator.py`: `random_customer_name()` draws a first name (32 options) and a last name (33 options) uniformly and independently, so there are only $32 \times 33 = 1056$ distinct names, and every one of them receives about $1 000 000 / 1056 \approx 947$ orders. A customer here is therefore not a person but a name that many different orders share, and there is no customer ID in the data. Category, quantity, price, date and country are drawn independently of the name as well, so no customer is systematically richer than another. The ranking in D is mostly noise: a name that randomly collected $\approx 1030$ orders (Carol Taylor, Daniel Jackson) or a few expensive ones ends up on top. $$\text{Revenue} \approx \text{number of orders} \times \text{average order value}$$ (≈ 856 across the table), and both factors are nearly the same for everyone.
 </details>
 
 
@@ -231,22 +226,59 @@ The runtime increased on average by **5.7 times** (first 6.33 then 5.08).
 **Predictions for 1M rows:** we are increasing the row size for 5 times, meaning the number of rows will be 25 times more. The runtime will be increased by $5.7^{\log_2(5)}$ times.
 $$\text{join result: } 439\ 395\ 606 \cdot 25 = 10\ 984\ 890\ 150 \text{ rows.}$$
 $$\text{time: } 43\ 069.826 \cdot 5.7^{\log_2(5)} = 2\ 450\ 530.887 \text{ ms } (40:50.530).$$
+
 > **Step 2 — Does an index help?** Create an index on `country` of `people_100k`,
 > run `ANALYZE people_100k;`, and repeat the query. Did the time change? Use
 > `EXPLAIN ANALYZE` to support your answer. Why does (or doesn't) the index help?
 
 ~~~sql
+CREATE INDEX idx_people_100k_country ON people_100k(country);
+ANALYZE people_100k;
+
 EXPLAIN ANALYZE
 SELECT COUNT(*)
 FROM people_100k p1
 JOIN people_100k p2 ON p1.country = p2.country;
 ~~~
 
-This run took **9097.856 ms (00:09.098)**, meaning it was somewhat slower as the original run.
+Output:
+~~~text
+            QUERY PLAN                                                                                            
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=637025.05..637025.06 rows=1 width=8) (actual time=14058.671..14060.213 rows=1.00 loops=1)
+   Buffers: shared hit=186
+   ->  Gather  (cost=637024.84..637025.05 rows=2 width=8) (actual time=14058.648..14060.196 rows=2.00 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         Buffers: shared hit=186
+         ->  Partial Aggregate  (cost=636024.84..636024.85 rows=1 width=8) (actual time=13967.260..13967.264 rows=1.00 loops=2)
+               Buffers: shared hit=186
+               ->  Parallel Hash Join  (cost=2332.11..474261.24 rows=64705438 width=0) (actual time=192.541..8691.393 rows=54973254.00 loops=2)
+                     Hash Cond: (p1.country = p2.country)
+                     Buffers: shared hit=186
+                     ->  Parallel Index Only Scan using idx_people_100k_country on people_100k p1  (cost=0.29..1596.52 rows=58824 width=8) (actual time=0.036..7.408 rows=50000.00 loops=2)
+                           Heap Fetches: 0
+                           Index Searches: 1
+                           Buffers: shared hit=93
+                     ->  Parallel Hash  (cost=1596.52..1596.52 rows=58824 width=8) (actual time=191.423..191.424 rows=50000.00 loops=2)
+                           Buckets: 131072  Batches: 1  Memory Usage: 5248kB
+                           Buffers: shared hit=93
+                           ->  Parallel Index Only Scan using idx_people_100k_country on people_100k p2  (cost=0.29..1596.52 rows=58824 width=8) (actual time=0.035..3.709 rows=50000.00 loops=2)
+                                 Heap Fetches: 0
+                                 Index Searches: 1
+                                 Buffers: shared hit=93
+ Planning Time: 0.387 ms
+ JIT:
+   Functions: 16
+   Options: Inlining true, Optimization true, Expressions true, Deforming true
+   Timing: Generation 1.174 ms (Deform 0.266 ms), Inlining 124.845 ms, Optimization 69.897 ms, Emission 66.014 ms, Total 261.931 ms
+ Execution Time: 14061.149 ms
+(28 rows)
+~~~
 
 **Why did it happen?**
 - This query is pulling up every single matching pair across the entire table. Using indexing only helps with row lookup.
-- All rows are evaluated agains each other, so all expansions has to be calculated.
+- All rows are evaluated against each other, so all expansions have to be calculated.
 
 > **Step 3 — Rewrite it.** The query only wants the *number* of matching pairs,
 > not the pairs themselves. If a country has *k* people, how many pairs does it
@@ -261,14 +293,14 @@ $$\sum_{c} k^2_c \text{, where } c \in \text{Countries}.$$
 ~~~sql
 SELECT SUM(k * k) AS total_pairs
 FROM (
-    SELECT country, COUNT(*)::bigint AS k
-    FROM people_big
+    SELECT country, COUNT(*) AS k
+    FROM people_100k
     GROUP BY country
 ) sub;
 ~~~
 
 Output:
-~~~bash
+~~~text
  total_pairs 
 -------------
  10983941260
@@ -290,4 +322,5 @@ This ran in **0.2 sec**, so basically 10 000 times faster than the original pred
 >   **large-scale cloud environment**.
 > 
 > > **Optional:** support your answer with a diagram, SQL or code.
+
 
