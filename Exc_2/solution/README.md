@@ -200,6 +200,8 @@ Output:
 > > **Do not run it on the full table in class** — use the smaller tables below.
 > > (If you are curious, run it at home and let it finish.)
 > 
+> ---
+>
 > **Step 1 — Measure how it grows.** Create three smaller copies of the table:
 > 
 > ```sql
@@ -226,6 +228,8 @@ The runtime increased on average by **5.7 times** (first 6.33 then 5.08).
 **Predictions for 1M rows:** we are increasing the row size for 5 times, meaning the number of rows will be 25 times more. The runtime will be increased by $5.7^{\log_2(5)}$ times.
 $$\text{join result: } 439\ 395\ 606 \cdot 25 = 10\ 984\ 890\ 150 \text{ rows.}$$
 $$\text{time: } 43\ 069.826 \cdot 5.7^{\log_2(5)} = 2\ 450\ 530.887 \text{ ms } (40:50.530).$$
+
+---
 
 > **Step 2 — Does an index help?** Create an index on `country` of `people_100k`,
 > run `ANALYZE people_100k;`, and repeat the query. Did the time change? Use
@@ -280,6 +284,8 @@ Output:
 - This query is pulling up every single matching pair across the entire table. Using indexing only helps with row lookup.
 - All rows are evaluated against each other, so all expansions have to be calculated.
 
+---
+
 > **Step 3 — Rewrite it.** The query only wants the *number* of matching pairs,
 > not the pairs themselves. If a country has *k* people, how many pairs does it
 > contribute to the join? Write a query that computes the **same number
@@ -310,6 +316,8 @@ Time: 243.109 ms
 ~~~
 This ran in **0.2 sec**, so basically 10 000 times faster than the original prediction of more than 40 mins.
 
+---
+
 > **Step 4 — Discussion (submit in writing).** Considering **scalability** and
 > **efficiency**, which approaches and/or optimizations can be applied to improve
 > this kind of query in a real system? Discuss at least:
@@ -323,4 +331,26 @@ This ran in **0.2 sec**, so basically 10 000 times faster than the original pred
 > 
 > > **Optional:** support your answer with a diagram, SQL or code.
 
+The experiments show that the main problem with the original query is the size of the intermediate join result. Although `people_big` contains only one million rows, joining the table with itself on `country` produces billions of matching pairs. Since the query only needs to count these pairs, generating the entire result is unnecessarily expensive.
+
+#### 1. Indexes, hardware, and query optimization
+Adding an index or more powerful hardware can improve query execution, but neither addresses the fundamental inefficiency of generating billions of pairs when only their count is needed. An index is most useful when it allows the database to find a relatively small subset of rows efficiently. In this example, most rows match many other rows because `country` has relatively few distinct values. Consequently, an index cannot eliminate the cost of processing the large number of matches. The execution plan also shows that PostgreSQL uses a parallel hash join rather than repeatedly performing individual index lookups.
+
+The rewritten query is much more efficient because it first groups the rows by country and counts the people in each group. It then calculates the square of each group count and adds the results. Instead of processing billions of matching pairs, the database processes the input rows and a small number of groups. This demonstrates that choosing a better algorithm can provide a much greater performance improvement than simply adding hardware or indexes.
+
+#### 2. What if the business actually needs all matching pairs?
+If the business needs the actual pairs rather than just their count, the quadratic cost cannot generally be avoided when all matching pairs must be produced. For a country with $k$ people, the query must generate $k^2$ pairs. Increasing the number of input rows therefore causes the output to grow approximately quadratically, assuming the distribution of countries remains similar.
+
+A more powerful server, additional memory, and parallel query execution can reduce the execution time, but they cannot eliminate the amount of output that must be generated. A distributed cluster may help by partitioning the data and processing different groups in parallel. However, it introduces network communication, coordination, and data-transfer overhead. The final output may itself become the bottleneck, particularly if all pairs must be transferred to one client or stored in one destination.
+
+In a real application, I would first verify whether the business truly needs every pair. If possible, I would return aggregated results, process the output in batches, or filter the data to the relevant countries or records. If every pair is genuinely required, I would consider a distributed analytical processing system and estimate the output size and storage requirements before executing the query.
+
+#### 3. Limitations of OLTP databases in large-scale cloud environments
+OLTP databases such as PostgreSQL are designed primarily for transactional workloads, including inserting, updating, and retrieving individual records with low latency. Large analytical queries that scan substantial portions of a table, perform expensive joins, and generate enormous intermediate results can compete with these transactions for CPU, memory, storage bandwidth, and database connections.
+
+In a cloud environment, scaling up to a larger database instance can improve performance, but it increases costs and does not solve the underlying algorithmic problem. Scaling out an OLTP database can also be complicated by data distribution, cross-node joins, and coordination overhead.
+
+For recurring, large-scale analytical workloads, I would consider moving the analysis to a column-oriented analytical database or a cloud data warehouse. For example, a distributed processing engine could execute large joins across multiple machines, while PostgreSQL remains responsible for transactional operations. The data could be replicated or transferred into the analytical system through an appropriate batch or streaming pipeline.
+
+**Conclusion:** The most effective optimization in this experiment is to avoid computing information that the query does not need. Indexes, parallel execution, and additional hardware can help, but reducing the computational complexity of the operation is usually the most effective first step. When the complete join output is genuinely required, distributed processing may help, although the quadratic output size remains an important limitation.
 
