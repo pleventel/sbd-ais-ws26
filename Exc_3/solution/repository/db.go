@@ -1,12 +1,19 @@
 package repository
 
-import "ordersystem/model"
+import (
+	"ordersystem/model"
+	"sync"
+	"time"
+)
 
 type DatabaseHandler struct {
 	// drinks represent all available drinks
 	drinks []model.Drink
 	// orders serves as order history
 	orders []model.Order
+
+	// every HTTP request runs in its own goroutie.
+	mu sync.RWMutex
 }
 
 // todo
@@ -18,7 +25,7 @@ func NewDatabaseHandler() *DatabaseHandler {
 		{ID: 2, Name: "Light Beer",    Price: 3.20, Description: "Alcohol free, cold, 0.5 l."},
 		{ID: 3, Name: "Coke",          Price: 2.80, Description: "Cold, 0.33 l."},
 		{ID: 4, Name: "Mineral Water", Price: 2.00, Description: "0.5 l."},
-		{ID: 5, Name: "Tap Water",     Price: 1.00, Description: "biggest lie ever..."}
+		{ID: 5, Name: "Tap Water",     Price: 1.00, Description: "biggest lie ever..."},
 	}
 
 	// Init orders slice with some test data
@@ -29,7 +36,7 @@ func NewDatabaseHandler() *DatabaseHandler {
 		{DrinkID: 2, Amount: 3, CreatedAt: now.Add(-20 * time.Minute)},
 		{DrinkID: 5, Amount: 2, CreatedAt: now.Add(-12 * time.Minute)},
 		{DrinkID: 1, Amount: 4, CreatedAt: now.Add(-8 * time.Minute)},
-		{DrinkID: 4, Amount: 1, CreatedAt: now.Add(-3 * time.Minute)}
+		{DrinkID: 4, Amount: 1, CreatedAt: now.Add(-3 * time.Minute)},
 	}
 
 	return &DatabaseHandler{

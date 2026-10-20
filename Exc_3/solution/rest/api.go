@@ -1,8 +1,11 @@
 package rest
 
 import (
+	"encoding/json"
 	"net/http"
+	"ordersystem/model"
 	"ordersystem/repository"
+	"time"
 
 	"github.com/go-chi/render"
 )
@@ -27,9 +30,9 @@ func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
 // @Produce  		json
 // @Success 		200 {array} model.Order
 // @Router 			/api/order/all [get]
-func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
+func GetOrders(db *repository.DatabaseHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		orders := GetOrders()
+		orders := db.GetOrders()
 		render.Status(r, http.StatusOK)
 		render.JSON(w, r, orders)
 	}
@@ -42,8 +45,8 @@ func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
 // @Success 		200 {object} map[string]uint64
 // @Router 			/api/order/totalled [get]
 func GetOrdersTotal(db *repository.DatabaseHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r, *http.Request) {
-		orderstotal := GetTotalledOrders()
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderstotal := db.GetTotalledOrders()
 		render.Status(r, http.StatusOK)
 		render.JSON(w, r, orderstotal)
 	}
@@ -78,7 +81,7 @@ func PostOrder(db *repository.DatabaseHandler) http.HandlerFunc {
 
 		// add to db
 		db.AddOrder(&order)
-		
+
 		render.Status(r, http.StatusOK)
 		render.JSON(w, r, "ok")
 	}
