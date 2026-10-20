@@ -15,16 +15,39 @@ import (
 // @Router 			/api/menu [get]
 func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// todo
-		// get slice from db
-		// render.Status(r, http.StatusOK)
-		// render.JSON(w, r, <your-slice>)
+		drinks := db.GetDrinks()
+		render.Status(r, http.StatusOK)
+		render.JSON(w, r, drinks)
 	}
 }
 
-// todo create GetOrders /api/order/all
+// GetOrders 		godoc
+// @tags 			Order
+// @Description 	Returns the order history (all orders)
+// @Produce  		json
+// @Success 		200 {array} model.Order
+// @Router 			/api/order/all [get]
+func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orders := GetOrders()
+		render.Status(r, http.StatusOK)
+		render.JSON(w, r, orders)
+	}
+}
 
-// todo create GetOrdersTotal /api/order/total
+// GetOrdersTotal 	godoc
+// @tags 			Order
+// @Description 	Returns a map of drink ID to the total amount ordered of that drink
+// @Produce  		json
+// @Success 		200 {object} map[string]uint64
+// @Router 			/api/order/totalled [get]
+func GetOrdersTotal(db *repository.DatabaseHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r, *http.Request) {
+		orderstotal := GetTotalledOrders()
+		render.Status(r, http.StatusOK)
+		render.JSON(w, r, orderstotal)
+	}
+}
 
 // PostOrder 		godoc
 // @tags 			Order
@@ -37,11 +60,25 @@ func GetMenu(db *repository.DatabaseHandler) http.HandlerFunc {
 // @Router 			/api/order [post]
 func PostOrder(db *repository.DatabaseHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// todo
 		// declare empty order struct
+		var order model.Order
+		
 		// err := json.NewDecoder(r.Body).Decode(&<your-order-struct>)
+		err := json.NewDecoder(r.Body).Decode(&order)
+		if err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, map[string]string{"error": err.Error()})
+			return
+		}
+
 		// handle error and render Status 400
+		if order.CreatedAt.IsZero() {
+			order.CreatedAt = time.Now()
+		}
+
 		// add to db
+		db.AddOrder(&order)
+		
 		render.Status(r, http.StatusOK)
 		render.JSON(w, r, "ok")
 	}
