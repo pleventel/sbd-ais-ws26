@@ -76,4 +76,7 @@ func (db *DatabaseHandler) GetTotalledOrders() map[uint64]uint64 {
 func (db *DatabaseHandler) AddOrder(order *model.Order) {
 	// todo
 	// add order to db.orders slice
+	if order != nil {
+		db.orders = append(db.orders, *order)
+	}
 }
