@@ -1349,3 +1349,88 @@ As a result, the backlog continuously increases because new readings arrive fast
 
 The `missing` counter can additionally increase because of the previously identified PostgreSQL polling issue. Consequently, the system suffers from both insufficient processing capacity and unreliable reading delivery.
 </details>
+
+
+> ### Stage B — Decide
+> 
+> You may discuss the options with a neighbour, but write your own decision
+> record.
+> 
+> Compare these two options against R1–R4 (add your own idea if you have
+> one):
+> 
+> 1. keep PostgreSQL, but poll it better (e.g. several pollers, each for a
+>    part of the machines);
+> 2. the gateways write every reading into Kafka (or another log-based
+>    platform) instead of into PostgreSQL.
+> 
+> For each option: which requirements does it meet, which are at risk? Then
+> decide, and estimate for your choice: how many detector instances does
+> the model (3 ms per reading) need for 600 readings/s, and for 100,000? A
+> small office that logs one temperature reading per minute is perfectly
+> served by option 1: where, roughly, is the tipping point?
+> 
+> Write it down as a short decision record (half a page: options, decision,
+> reasons, numbers). PostgreSQL stays the system of record for the machine
+> registry in any case.
+
+<details>
+<summary style="font-weight: bold;">Compare the two options against R1–R4</summary>
+
+#### Improve PostgreSQL polling
+##### Advantages:
+- Relatively simple to implement.
+- No additional messaging infrastructure.
+- Existing PostgreSQL integration can be reused.
+- Multiple pollers can distribute the model inference workload.
+- Appropriate for low-volume applications.
+
+##### Disadvantages:
+- Multiple pollers do not automatically solve the transaction commit-order problem.
+- Every consumer needs to query PostgreSQL independently.
+- Parallel polling increases database load.
+- Maintaining strict per-machine ordering across multiple pollers requires additional coordination.
+- The database becomes both the system of record and the primary data-distribution mechanism.
+- Scaling to 100,000 readings per second creates considerable database and coordination overhead.
+
+#### Introduce Kafka
+##### Advantages:
+- High-throughput distributed event ingestion.
+- Messages are stored in an append-only log.
+- Partitioning enables parallel processing.
+- Message keys allow readings from the same machine to reach the same partition.
+- Independent consumer groups can read the same events without interfering with each other.
+- Consumers can resume from committed offsets.
+- Historical messages can be replayed.
+
+##### Disadvantages:
+- Additional infrastructure and operational complexity.
+- Requires Kafka administration and monitoring.
+- Partitioning and consumer-group configuration need careful planning.
+- Model state must be handled when consumers are reassigned partitions.
+- Kafka does not automatically guarantee that an application processes every event exactly once.
+
+#### Overall choice
+`Kafka` fulfills the R1-R4 requirements better.
+</details>
+
+### Decision
+The `kafka`-based event streaming, is selected.
+
+`Kafka` provides a more suitable architecture for high-throughput ingestion, parallel processing and independent consumers. It also supports persistent message storage and offset management, allowing consumers to resume processing or replay historical events.
+
+PostgreSQL will remain the system of record for the machine registry and related relational information. `Kafka` will handle the continuous distribution of sensor readings.
+
+### Capacity estimation
+Each model inference requires approximately 3 ms, resulting in a theoretical processing capacity of 333.33 readings per second per detector instance.
+
+Laboratory workload (600 readings/s): at least 2 detector instances.
+
+Production workload (100,000 readings/s): at least 300 detector instances.
+
+These values represent theoretical minimums. Additional capacity would be necessary to account for processing overhead, traffic fluctuations and fault tolerance.
+
+### Consequences
+The selected architecture introduces additional infrastructure and operational complexity. `Kafka` requires appropriate topic partitioning, consumer-group management and monitoring. Furthermore, the stateful nature of the ML model requires careful handling of machine-to-partition assignment and consumer rebalancing.
+
+Nevertheless, the improved scalability, ordering guarantees within partitions, persistent event log and independent consumer groups make `Kafka` the more appropriate solution for the expected workload and future system growth.
