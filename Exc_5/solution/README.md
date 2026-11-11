@@ -1421,7 +1421,7 @@ A small office with one temperature reading per minute is served perfectly by op
 
 So: up to a few hundred readings/s with one or two consumers, PostgreSQL is fine. Our lab (600 readings/s, three consumers) is already beyond that, and the target (100,000 readings/s) is far beyond.
 
-#### Consequences (what I accept)
+#### Consequences
 
 - **More to operate:** a Kafka cluster, partition planning, monitoring of the consumer lag.
 - **The model state lives in the detector's memory.** If a partition moves to another instance, the new owner has no model for those machines: it needs 100 readings of warm-up plus 50 for the first full window = 15 s at 10 Hz (3 s at 50 Hz) before it can score a machine again. This is a short blind spot for the machines that moved. The old owner must forget them, otherwise its state is stale when the partition comes back (see Stage C).
@@ -1467,14 +1467,14 @@ So: up to a few hundred readings/s with one or two consumers, PostgreSQL is fine
 `Kafka` fulfills the R1-R4 requirements better.
 </details>
 
-### Decision
+#### Decision
 The `kafka`-based event streaming, is selected.
 
 `Kafka` provides a more suitable architecture for high-throughput ingestion, parallel processing and independent consumers. It also supports persistent message storage and offset management, allowing consumers to resume processing or replay historical events.
 
 PostgreSQL will remain the system of record for the machine registry and related relational information. `Kafka` will handle the continuous distribution of sensor readings.
 
-### Capacity estimation
+#### Capacity estimation
 Each model inference requires approximately 3 ms, resulting in a theoretical processing capacity of 333.33 readings per second per detector instance.
 
 Laboratory workload (600 readings/s): at least 2 detector instances.
@@ -1483,7 +1483,33 @@ Production workload (100,000 readings/s): at least 300 detector instances.
 
 These values represent theoretical minimums. Additional capacity would be necessary to account for processing overhead, traffic fluctuations and fault tolerance.
 
-### Consequences
+#### Consequences
 The selected architecture introduces additional infrastructure and operational complexity. `Kafka` requires appropriate topic partitioning, consumer-group management and monitoring. Furthermore, the stateful nature of the ML model requires careful handling of machine-to-partition assignment and consumer rebalancing.
 
 Nevertheless, the improved scalability, ordering guarantees within partitions, persistent event log and independent consumer groups make `Kafka` the more appropriate solution for the expected workload and future system growth.
+
+> ### Stage C — Challenge: Build the core (Optional)
+> 
+> The group already operates Kafka (it is in `docker-compose.yml`), so you
+> build option 2. If you decided otherwise in Stage B, that is fine: say in
+> your decision record what would be different. Run every long-running
+> process in its own terminal in `guardian/`.
+> 
+> ![Stage C: plant.py (KafkaSink) writes to your topic; N instances of detector_service.py read it and publish to the topic anomalies; scoreboard.py checks R2 and R3. Under each part, the decision it needs: which key and settings, how many partitions, how many instances, which group and where to start reading, which key for the anomalies, and whether you can explain a FAIL](../images/part2-stage-c.png)
+> 
+> 1. **Gateways.** Create the topic for the readings with `kafka-topics.sh`
+>    (Part 1, step 1), implement `KafkaSink` in `plant.py`, and start the plant:
+>    `python3 plant.py --sink kafka`.
+> 2. **Detector.** Complete the `TODO`s in `detector_service.py` and start as
+>    many instances as you estimated. The detector publishes its anomaly
+>    events to the topic **`anomalies`**: the maintenance team and the
+>    scoreboard read them from there.
+> 3. After ~3 minutes (two faults), check:
+> 
+>    ```bash
+>    python3 scoreboard.py
+>    ```
+> 
+>    If something fails, find out why with `kafka-topics.sh
+>    --describe`, `kafka-consumer-groups.sh --describe` (Part 1, step 4) and the
+>    Kafka UI, and fix it.
