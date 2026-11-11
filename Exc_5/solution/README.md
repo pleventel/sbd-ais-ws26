@@ -47,10 +47,11 @@
 <summary style="font-weight: bold;"><i>Predict:</i> run it twice. Does <code>user-1</code> land in the same partition both times? Where do events without a key go?</summary>
 
 #### Expectation:
-Running the file twice should result in all users ending up in the same partition.
+Every key is hashed to the same partition on every run, so `user-1` lands in the same partition in both runs (and so does every other user). Events without a key have nothing to hash, so they should be spread over both partitions.
 
 #### Observation:
-The prediction was correct: all users ended up in the same partition.
+The prediction was correct: in both runs `user-1` and `user-2` went to partition 0, and `user-3` and `user-4` went to partition 1. Only the offsets continue (partition 0: offsets 0–10 in the first run, 11–21 in the second).
+
 <details>
 <summary><i>Output</i></summary>
 
@@ -257,6 +258,10 @@ key=user-3    ->  partition 1  offset 40
 sent 20 events to topic 'clicks'
 ~~~
 </details>
+
+**Who reads which keys?** Partition 0 holds `user-1` and `user-2`, partition 1 holds `user-3` and `user-4` (step 2). So `A` (partition 0) only saw `user-1`/`user-2`, `B` (partition 1) only `user-3`/`user-4`, and `C` saw nothing until a rebalance gave it a partition. **Which events does `X` read?** `X` is in a second group (`billing`) and therefore independent of `dashboard`: it reads *all* events of *both* partitions (all four keys) and changes nothing for `A`, `B` and `C` (see `X` in step 4).
+
+**Why do the offsets 37–40 appear twice in terminal 3 (`C`)?** `consumer.py` commits only every 5 events (`--commit-every 5`) and does not commit when a partition is revoked. `B` had read partition 1 up to offset 40 but had only committed up to offset 36, so `C` started at the committed position 37 and read 37–40 again. Later `C` itself had read only 4 events (below the threshold of 5), so when its partition was revoked and assigned again it restarted at 37 once more. Kafka delivers **at least once**: whatever was processed but not yet committed is processed again by the next owner. *Lesson for Part 2:* commit before giving up a partition.
 
 `Kafka` consumer groups allow multiple consumers to share the processing workload.
 
@@ -983,6 +988,8 @@ IDs are assigned when records are inserted, independently of when their transact
 When the detector queries the database, it can therefore encounter higher IDs while lower IDs are still invisible due to an uncommitted transaction. After processing the visible records, it advances its `last_id` cursor to the highest observed ID. Once the earlier transaction commits, its records have IDs below the cursor and are permanently excluded from subsequent queries.
 
 Thus, the issue is not that PostgreSQL loses data, but that the polling mechanism can skip committed records when multiple independent transactions are involved.
+
+**The numbers of this run** (20 machines, 97 s): the plant sent **19,320** readings and the table contains **19,320** rows, and the detector's cursor (`last id`) also ended at 19,320 — but it only **read 16,265** rows. The other **3,055** committed rows were never delivered to the model. The model counted 3,040 of them as `missing`: it can only notice a gap when a later reading of the same machine arrives, so a few skipped readings stay unnoticed. So: the missing readings *are* in the table, and the cursor has moved past them for good.
 </details>
 
 <details>
@@ -1347,7 +1354,11 @@ With 60 machines generating 10 readings per second each, the system produces 600
 
 As a result, the backlog continuously increases because new readings arrive faster than the detector can process them. The processing delay also increases, meaning that the detector works with increasingly outdated sensor data. This violates the freshness requirement, which specifies that anomalies must be detected within five seconds at the 95th percentile.
 
-The `missing` counter can additionally increase because of the previously identified PostgreSQL polling issue. Consequently, the system suffers from both insufficient processing capacity and unreliable reading delivery.
+**`missing` is flat in this run.** In the output it goes from 13 to 25 in the first seconds and then stays at 25, although the table keeps growing. The commit-order problem of question 1 only hits a detector that reads the *newest* ids, where a transaction may still be open. This detector is far behind (backlog of up to 38,000 rows), so everything it reads was committed long ago and nothing is skipped. The two problems hide each other: the overload prevents the skipping, and the skipping would come back as soon as the detector had caught up. The system suffers from both insufficient processing capacity and unreliable reading delivery.
+
+**The capacity is visible in the log:** `read` grows by 2,000 rows per status line, and a line appears about every 6 s (the loop only looks at the clock after a batch of up to 2,000 rows = 6 s at 3 ms), i.e. ≈ 333 readings/s. The backlog therefore grows by ≈ 600 − 333 = 267 rows/s, and the `delay` by ≈ 0.45 s per second of running (267 / 600), so R3 (≤ 5 s) is already violated after ≈ 11 s.
+
+**What this means for the maintenance team:** the fault on `M-029` started at t = 40 s and the machine was repaired at t = 85 s. The first anomaly for `M-029` (`seq=480`, i.e. reading time ≈ 48 s) was printed at a `delay` of ≈ 43 s, so at ≈ 91 s — *after* the machine had already been repaired. The model recognises the wear in time; the pipeline delivers the alert too late to be useful. (In experiment 1, with 200 readings/s < 333/s, the detector kept up — `delay` 0.2–0.3 s — so there the problem was not capacity but the lost readings.)
 </details>
 
 
@@ -1373,6 +1384,48 @@ The `missing` counter can additionally increase because of the previously identi
 > Write it down as a short decision record (half a page: options, decision,
 > reasons, numbers). PostgreSQL stays the system of record for the machine
 > registry in any case.
+
+#### Options against R1–R4
+
+| | R1 Scale | R2 Complete and ordered | R3 Fresh (≤ 5 s) | R4 Independent consumers |
+|---|---|---|---|---|
+| **1. PostgreSQL, several pollers** (one per range of machines) | **At risk.** 100,000 inserts/s into one table, and several hundred pollers querying it | **Fails as it is:** every poller has the commit-order gap of Stage A. Workarounds (re-read an overlap window and de-duplicate, track open transactions) add complexity | OK in the lab (≥ 2 pollers, ≈ 0.2 s polling interval); at risk at scale | **Fails:** every new consumer is one more poller on the same table, i.e. more load on PostgreSQL |
+| **2. Gateways write to Kafka** | **OK.** Add partitions and detector instances. 100,000 readings/s × ≈ 140 B ≈ 14 MB/s is no problem for Kafka | **OK.** Key `machine_id` → one partition → order. Risk: the model state when a partition moves | **OK.** A consumer gets an event within milliseconds, provided there are enough instances | **OK.** Every consumer has its own group and offsets; PostgreSQL is not involved |
+
+*My own idea:* PostgreSQL plus change-data-capture (logical decoding, e.g. Debezium) into Kafka delivers the rows in commit order, which closes the gap of Stage A. But every reading would still be written through PostgreSQL, so R1 stays at risk. It only makes sense for data that has to live in PostgreSQL anyway.
+
+#### Decision
+
+**Option 2: the gateways write every reading into Kafka.** Key = `machine_id`, topic `readings` with 6 partitions in the lab, one consumer group `detector` for the detector instances; the archive and the dashboard get their own groups. The detector publishes anomalies to the topic `anomalies`. PostgreSQL stays the system of record for the machine registry.
+
+#### Numbers
+
+One reading costs 3 ms, so one detector instance processes at most 1 / 0.003 ≈ **333 readings/s** (Stage A confirms it: the baseline detector read 2,000 rows per ≈ 6 s).
+
+| | Readings/s | Model time needed (readings/s × 3 ms) | Instances | Plan |
+|---|---|---|---|---|
+| Lab | 600 | 1.8 s per second | at least 2 | **3 instances**, 6 partitions |
+| Production | 100,000 | 300 s per second | at least 300 | ≈ 400 instances (≈ 75 % load), many more partitions than instances |
+
+**Why 3 and not 2 in the lab.** Two instances would be 90 % busy on average, and the keys are not spread evenly. The murmur2 hash puts the machines `M-001 … M-060` on these partitions: with 2 partitions **26 / 34** machines, so the busier instance would get 340 readings/s — more than the 333/s it can process, and its backlog would grow. With 6 partitions the split is **7 / 18 / 11 / 9 / 8 / 7**. Three instances with two partitions each get at most 29 machines (290 readings/s, 87 %), e.g. 25 / 20 / 15 machines when instance *i* gets partitions 2*i* and 2*i*+1. If one instance lags, up to 6 instances can work (one per partition).
+
+**Production.** At 50 Hz one machine alone costs 0.15 of an instance (50 × 3 ms), so an instance can serve at most ≈ 6 machines. The number of partitions must be at least the number of instances, and at this size much larger (order of magnitude: one partition per machine, ≈ 2,000): hashing leaves some partitions with far more machines than the average, and a single partition can never be split over two instances. The cheapest lever is the model itself: halving the 3 ms halves the number of instances.
+
+#### Where is the tipping point?
+
+A small office with one temperature reading per minute is served perfectly by option 1: even 1,000 sensors are only ≈ 17 readings/s, a delay of a few seconds does not matter for minute data, and there is one poller and one consumer. Option 1 starts to hurt when one of these becomes true (roughly in this order):
+
+1. **One process is no longer enough:** rate × cost per reading ≈ one CPU. For our model that is ≈ 300 readings/s (e.g. 30 machines at 10 Hz). From here on you need several parallel *stateful* consumers, and a table cannot hand out "all readings of machine X, in order" to one of them; Kafka's keys and partitions can.
+2. **A second and third consumer appears** (archive, dashboard, ...): each one polls the same table again.
+3. **The table turns into a queue:** thousands of inserts per second that are read once and then not needed any more (index and vacuum load).
+
+So: up to a few hundred readings/s with one or two consumers, PostgreSQL is fine. Our lab (600 readings/s, three consumers) is already beyond that, and the target (100,000 readings/s) is far beyond.
+
+#### Consequences (what I accept)
+
+- **More to operate:** a Kafka cluster, partition planning, monitoring of the consumer lag.
+- **The model state lives in the detector's memory.** If a partition moves to another instance, the new owner has no model for those machines: it needs 100 readings of warm-up plus 50 for the first full window = 15 s at 10 Hz (3 s at 50 Hz) before it can score a machine again. This is a short blind spot for the machines that moved. The old owner must forget them, otherwise its state is stale when the partition comes back (see Stage C).
+- **At-least-once:** after a crash a few readings can be processed twice and an anomaly can be published twice; the `anomaly_id` identifies duplicates. Kafka is not "exactly once" by itself.
 
 <details>
 <summary style="font-weight: bold;">Compare the two options against R1–R4</summary>
