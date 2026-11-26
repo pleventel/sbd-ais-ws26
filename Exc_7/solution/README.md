@@ -98,10 +98,10 @@ A job does three things: read, write, remember. The question is where it remembe
 
 ```python
 def run_once():
-    start = lake_position()            # 1. where did the last run stop? Ask the lake.
-    new = read_new(start)              # 2. read from there up to the end of the topic now
-    run = write_files(new, STAGING)    # 3. write into staging, which readers never look at
-    publish(run)                       # 4. one rename moves the finished run into the lake
+    start = lake_position()            # where did the last run stop? Ask the lake.
+    new = read_new(start)              # read from there up to the end of the topic now
+    run = write_files(new, STAGING)    # write into staging, which readers never look at
+    publish(run)                       # one rename moves the finished run into the lake
 ```
 
 What happens in each line:
@@ -110,6 +110,13 @@ What happens in each line:
 2. `read_new(start)` fixes the end offsets of the topic at this moment and reads the range from `start` to that end. Records that arrive later are left for the next run.
 3. `write_files(new, STAGING)` first deletes leftovers of an earlier crashed run in staging, then writes the new records as Parquet into a new run folder in `staging/`.
 4. `publish(run)` renames `staging/run-…` to `lake/logs/run-…`. Both folders are on the same mounted volume, so this is a single atomic step. If there was nothing to write, `run` is `None` and `publish` does nothing.
+
+### Running it
+
+~~~text
+read_new: 0 new records
+write_files: nothing to write
+~~~
 
 ### Explanation of the result
 
